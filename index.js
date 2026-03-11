@@ -1887,7 +1887,7 @@ function renderTimersTextFromSnapshot() {
     const hasActiveCooldown = Number.isFinite(cooldownSeconds) && cooldownSeconds > 0;
     if (!hasUpcomingReservation && !hasActiveCooldown) return "Any time/date";
     if (!next || !Number.isFinite(next.secondsUntil) || !next.reservationUtc) return "Unknown";
-    const stamp = formatTimestamp(next.secondsUntil, "f");
+    const stamp = formatTimestamp(next.secondsUntil, "t");
     return stamp || "Unknown";
   };
 
@@ -2017,9 +2017,10 @@ function renderReservationsTextFromSnapshot() {
     const hh = Math.floor(mmTotal / 60);
     const mm = mmTotal % 60;
     const remainingStr = hh > 0 ? `${hh}h ${mm}m` : `${mm}m`;
-    const stamp = formatTimestamp(next.secondsUntil, "f");
+    const stamp = formatTimestamp(next.secondsUntil, "t");
     if (!stamp) return `Next reservation in ${mm}m`;
-    return `Next reservation at ${stamp}, in ${remainingStr}`;
+    const relative = formatTimestamp(next.secondsUntil, "R");
+    return `Next reservation at ${stamp}, in ${relative || remainingStr}`;
   };
 
   return [
