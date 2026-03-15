@@ -3673,6 +3673,8 @@ client.on("interactionCreate", async (interaction) => {
           console.log("manual refresh debug row 224: not found");
         }
         if (timersSnapshot?.rowStates) {
+          // Force a reconcile even if a previous loop got stuck.
+          reservationStateSyncInFlight = false;
           await reconcileReservationState(timersSnapshot.rowStates);
         }
         if (timersSnapshot?.activeSerials) {
