@@ -4544,5 +4544,25 @@ client.on("interactionCreate", async (interaction) => {
 client.on("error", (err) => console.error("Discord client error:", err));
 process.on("unhandledRejection", (reason) => console.error("Unhandled promise rejection:", reason));
 
+process.on("message", (packet) => {
+  try {
+    if (!packet || packet.type !== "process:msg") return;
+    const data = packet.data || {};
+    if (data.action !== "timezone") return;
+    const userId = String(data.userId || data.user || "").trim();
+    const tz = userId ? readJsonSafe(TZ_STORE_PATH, {})[userId] : null;
+    const payload = {
+      action: "timezone",
+      userId,
+      timezone: tz || null,
+    };
+    if (typeof process.send === "function") {
+      process.send({ type: "process:msg", data: payload });
+    }
+  } catch (e) {
+    console.error("pm2 trigger timezone error:", e);
+  }
+});
+
 client.login(DISCORD_TOKEN);
 
