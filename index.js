@@ -29,6 +29,11 @@ require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
 const fetch = require("node-fetch");
 const { DateTime } = require("luxon");
 const fs = require("fs");
+let pm2io = null;
+try {
+  // Optional; enables `pm2 trigger <app> timezone <userId>`
+  pm2io = require("@pm2/io");
+} catch {}
 
 const {
   Client,
@@ -4544,6 +4549,30 @@ client.on("interactionCreate", async (interaction) => {
 client.on("error", (err) => console.error("Discord client error:", err));
 process.on("unhandledRejection", (reason) => console.error("Unhandled promise rejection:", reason));
 
+if (pm2io && typeof pm2io.action === "function") {
+  pm2io.action("timezone", (reply) => {
+    try {
+      const raw = reply?.body;
+      let userId = "";
+      if (Array.isArray(raw)) {
+        userId = String(raw[0] ?? "").trim();
+      } else if (raw && typeof raw === "object") {
+        userId = String(raw.userId ?? raw.id ?? "").trim();
+      } else if (raw != null) {
+        userId = String(raw).trim();
+      }
+      if (!userId) {
+        reply({ ok: false, error: "missing_user_id" });
+        return;
+      }
+      const tz = readJsonSafe(TZ_STORE_PATH, {})[userId] || null;
+      reply({ ok: true, userId, timezone: tz });
+    } catch (e) {
+      reply({ ok: false, error: "lookup_failed" });
+    }
+  });
+}
+
 process.on("message", (packet) => {
   try {
     if (!packet || packet.type !== "process:msg") return;
@@ -4565,4 +4594,6 @@ process.on("message", (packet) => {
 });
 
 client.login(DISCORD_TOKEN);
+
+
 
