@@ -1375,6 +1375,17 @@ function parseReservationUTC(resStr) {
   return new Date(utcMs);
 }
 
+function normalizeReservationDisplay(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  if (raw === "-" || raw === "–" || raw === "—") return "—";
+  return raw;
+}
+
+function isReservationMissing(value) {
+  return normalizeReservationDisplay(value) === "—";
+}
+
 async function findExistingReservationsMessage(channel, client) {
   if (!channel?.isTextBased()) return null;
   const msgs = await channel.messages.fetch({ limit: 50 });
@@ -1620,6 +1631,7 @@ async function fetchTimersSnapshotFromSheetDb() {
     const title = String(getRowValue(row, ["Title", "TITLE", "title"]) || "").trim();
     const done = parseBool(getRowValue(row, ["Done", "DONE", "done"]));
     const reservationRaw = String(getRowValue(row, ["Reservation (UTC)", "RESERVATION (UTC)", "reservationUtc", "reservation_utc"]) || "").trim();
+    const reservationStr = normalizeReservationDisplay(reservationRaw);
     const reminder = parseBool(getRowValue(row, ["Reminder", "REMINDER", "reminder"]));
     const pingUsed = parseBool(getRowValue(row, ["Pinged", "PINGED", "pinged", "Ping Used", "PING_USED", "pingUsed", "ping_used"]));
     const username = String(getRowValue(row, ["Username", "USERNAME", "username"]) || "").trim();
@@ -1647,7 +1659,7 @@ async function fetchTimersSnapshotFromSheetDb() {
       rowStates.push({
         serial,
         title,
-        reservationUtc: reservationRaw || "—",
+        reservationUtc: reservationStr,
         reminder,
         pingUsed,
         done,
@@ -1667,9 +1679,9 @@ async function fetchTimersSnapshotFromSheetDb() {
       }
     }
 
-    if (!reservationRaw || reservationRaw === "—") continue;
+    if (isReservationMissing(reservationStr)) continue;
 
-    const resUtc = parseReservationUTC(reservationRaw);
+    const resUtc = parseReservationUTC(reservationStr);
     if (!resUtc) continue;
     const resMs = resUtc.getTime();
     if (!done && resMs >= nowMs - 3600_000) {
@@ -2326,9 +2338,9 @@ async function reconcileReservationState(rowStates) {
       } catch {}
       if (!requestMsg) continue;
 
-      const reservationStr = String(rowState.reservationUtc || "—").trim() || "—";
+      const reservationStr = normalizeReservationDisplay(rowState.reservationUtc);
       const completed = getEffectiveDoneState(serial, rowState.done);
-      const reminderEnabled = !!rowState.reminder && reservationStr !== "—" && !completed;
+      const reminderEnabled = !!rowState.reminder && !isReservationMissing(reservationStr) && !completed;
       const currentIds = parseCurrentCustomIds(requestMsg);
       const hasPingButtonNow = currentIds.some((id) => id.startsWith("ping_"));
       const renderedCompleted = getCompletedFromEmbed(requestMsg);
@@ -2977,11 +2989,9 @@ function buildRequestActionRow(
     buildDoneButton(rowSerial, !!completed, pingUserId)
   );
 
-  const hasReservation =
-    typeof reservationStr === "string" &&
-    reservationStr.trim() !== "" &&
-    reservationStr.trim() !== "—";
-  const reservationUtc = hasReservation ? parseReservationUTC(reservationStr) : null;
+  const normalizedReservation = normalizeReservationDisplay(reservationStr);
+  const hasReservation = !isReservationMissing(normalizedReservation);
+  const reservationUtc = hasReservation ? parseReservationUTC(normalizedReservation) : null;
   const reservationInFuture = reservationUtc ? reservationUtc.getTime() > Date.now() : false;
 
   if (hasReservation && reservationInFuture && !completed) {
@@ -3758,8 +3768,8 @@ client.on("interactionCreate", async (interaction) => {
         if (bySerial.has(serial)) continue;
         if (getReservationOwner(serial) !== discordId) continue;
         if (!!rowState.done) continue;
-        const reservationUtc = String(rowState.reservationUtc || "—").trim() || "—";
-        if (reservationUtc !== "—") continue;
+        const reservationUtc = normalizeReservationDisplay(rowState.reservationUtc);
+        if (!isReservationMissing(reservationUtc)) continue;
         bySerial.set(serial, {
           serial,
           title: rowState.title,
@@ -3782,9 +3792,9 @@ client.on("interactionCreate", async (interaction) => {
 
       const lines = mergedItems.slice(0, 25).map((r) => {
         const title = String(r.title || "Title");
-        const reservationUtc = String(r.reservationUtc || "—").trim() || "—";
+        const reservationUtc = normalizeReservationDisplay(r.reservationUtc);
         const tz = getUserTimezone(interaction.user.id);
-        if (reservationUtc !== "—") {
+        if (!isReservationMissing(reservationUtc)) {
           return {
             username: getReservationUsername(r),
             line: `${title} — ${formatReservationForUserTimezone(reservationUtc, tz)}`,
@@ -4281,8 +4291,8 @@ client.on("interactionCreate", async (interaction) => {
       const rowSerial = interaction.customId.split("_")[1];
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const reservationStr = getReservationFromEmbed(interaction.message);
-      if (!reservationStr || String(reservationStr).trim() === "" || reservationStr === "—") {
+      const reservationStr = normalizeReservationDisplay(getReservationFromEmbed(interaction.message));
+      if (isReservationMissing(reservationStr)) {
         return interaction.editReply("❌ This request has no reservation time to remind for.");
       }
 
