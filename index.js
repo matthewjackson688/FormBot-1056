@@ -3659,6 +3659,19 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
+        const debugRow = (timersSnapshot?.rowStates || []).find((r) => String(r?.serial) === "224");
+        if (debugRow) {
+          console.log("manual refresh debug row 224:", {
+            serial: debugRow.serial,
+            reservationUtc: debugRow.reservationUtc,
+            done: debugRow.done,
+            reminder: debugRow.reminder,
+            username: debugRow.username,
+            coordinates: debugRow.coordinates,
+          });
+        } else {
+          console.log("manual refresh debug row 224: not found");
+        }
         if (timersSnapshot?.rowStates) {
           await reconcileReservationState(timersSnapshot.rowStates);
         }
