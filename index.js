@@ -3659,6 +3659,17 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
+        if (timersSnapshot?.rowStates) {
+          await reconcileReservationState(timersSnapshot.rowStates);
+        }
+        if (timersSnapshot?.activeSerials) {
+          await reconcileDeletedReservations(timersSnapshot.activeSerials);
+        }
+      } catch (e) {
+        console.error("manual refresh reconcile failed:", e);
+      }
+
+      try {
         await updateAllTimersMessages(client);
         await updateAllReservationsMessages(client);
       } catch (e) {
