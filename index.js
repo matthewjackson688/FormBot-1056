@@ -4550,25 +4550,29 @@ client.on("error", (err) => console.error("Discord client error:", err));
 process.on("unhandledRejection", (reason) => console.error("Unhandled promise rejection:", reason));
 
 if (pm2io && typeof pm2io.action === "function") {
-  pm2io.action("timezone", (reply) => {
+  pm2io.action("timezone", (data, reply) => {
+    const responder = typeof reply === "function" ? reply : data;
     try {
-      const raw = reply?.body;
+      const raw =
+        typeof reply === "function"
+          ? data
+          : responder?.args ?? responder?.body ?? responder;
       let userId = "";
       if (Array.isArray(raw)) {
         userId = String(raw[0] ?? "").trim();
       } else if (raw && typeof raw === "object") {
-        userId = String(raw.userId ?? raw.id ?? "").trim();
+        userId = String(raw.userId ?? raw.id ?? raw.args?.[0] ?? "").trim();
       } else if (raw != null) {
         userId = String(raw).trim();
       }
       if (!userId) {
-        reply({ ok: false, error: "missing_user_id" });
+        responder({ ok: false, error: "missing_user_id" });
         return;
       }
       const tz = readJsonSafe(TZ_STORE_PATH, {})[userId] || null;
-      reply({ ok: true, userId, timezone: tz });
+      responder({ ok: true, userId, timezone: tz });
     } catch (e) {
-      reply({ ok: false, error: "lookup_failed" });
+      responder({ ok: false, error: "lookup_failed" });
     }
   });
 }
@@ -4594,6 +4598,4 @@ process.on("message", (packet) => {
 });
 
 client.login(DISCORD_TOKEN);
-
-
 
