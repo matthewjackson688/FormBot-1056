@@ -5,6 +5,7 @@
   "main": "index.js",
   "dependencies": {
     "accepts": "^2.0.0",
+    "@pm2/io": "^6.1.0",
     "asynckit": "^0.4.0",
     "axios": "^1.13.2",
     "body-parser": "^2.2.1",
