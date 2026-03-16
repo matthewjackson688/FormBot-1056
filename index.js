@@ -3705,8 +3705,18 @@ client.on("interactionCreate", async (interaction) => {
 
       if (timed?.timeout) {
         await interaction.editReply("⏳ Refresh running… I’ll post a result shortly.");
-        refreshPromise
+        const maxWaitMs = 20_000;
+        Promise.race([
+          refreshPromise,
+          sleep(maxWaitMs).then(() => ({ timeout: true })),
+        ])
           .then((result) => {
+            if (result?.timeout) {
+              return interaction.followUp({
+                flags: MessageFlags.Ephemeral,
+                content: "❌ Refresh timed out. Check Apps Script availability and try again.",
+              });
+            }
             if (!result?.ok) {
               return interaction.followUp({ flags: MessageFlags.Ephemeral, content: "❌ Refresh failed (check logs)." });
             }
