@@ -1257,6 +1257,24 @@ function parseDmDateToken(value) {
   return dt;
 }
 
+function parseDmRangeToken(value) {
+  const raw = String(value || "").trim();
+  const timeMatch = raw.match(/^(\d{2}):(\d{2})\s+(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/);
+  if (timeMatch) {
+    const hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2]);
+    const day = Number(timeMatch[3]);
+    const month = Number(timeMatch[4]);
+    const year = timeMatch[5].length === 2 ? 2000 + Number(timeMatch[5]) : Number(timeMatch[5]);
+    const dt = DateTime.fromObject({ year, month, day, hour, minute, zone: "utc" });
+    if (!dt.isValid) return null;
+    return { dt, hasTime: true };
+  }
+  const dateOnly = parseDmDateToken(raw);
+  if (!dateOnly) return null;
+  return { dt: dateOnly, hasTime: false };
+}
+
 function parseQuotedSearchTerm(input) {
   const raw = String(input || "").trim();
   if (!raw) return { remainder: "", searchTerm: null };
@@ -1310,15 +1328,17 @@ function parseDmChannelRequest(content) {
     };
   }
 
-  const rangeMatch = rawFilter.match(/^(\d{2}\/\d{2}\/(?:\d{2}|\d{4}))\s*-\s*(\d{2}\/\d{2}\/(?:\d{2}|\d{4}))$/);
+  const rangeMatch = rawFilter.match(/^(\d{2}:\d{2}\s+\d{2}\/\d{2}\/(?:\d{2}|\d{4})|\d{2}\/\d{2}\/(?:\d{2}|\d{4}))\s*-\s*(\d{2}:\d{2}\s+\d{2}\/\d{2}\/(?:\d{2}|\d{4})|\d{2}\/\d{2}\/(?:\d{2}|\d{4}))$/);
   if (!rangeMatch) return null;
-  const start = parseDmDateToken(rangeMatch[1]);
-  const end = parseDmDateToken(rangeMatch[2]);
+  const start = parseDmRangeToken(rangeMatch[1]);
+  const end = parseDmRangeToken(rangeMatch[2]);
   if (!start || !end) return null;
-  const startMs = start.startOf("day").toMillis();
-  const endMs = end.endOf("day").toMillis();
+  const startMs = start.hasTime ? start.dt.toMillis() : start.dt.startOf("day").toMillis();
+  const endMs = end.hasTime ? end.dt.toMillis() : end.dt.endOf("day").toMillis();
   if (endMs < startMs) return null;
-  const rangeLabel = `${start.toFormat("dd/MM/yy")}-${end.toFormat("dd/MM/yy")} GMT`;
+  const startLabel = start.hasTime ? start.dt.toFormat("HH:mm dd/MM/yy") : start.dt.toFormat("dd/MM/yy");
+  const endLabel = end.hasTime ? end.dt.toFormat("HH:mm dd/MM/yy") : end.dt.toFormat("dd/MM/yy");
+  const rangeLabel = `${startLabel}-${endLabel} GMT`;
   return {
     type: "channel_export",
     guildId,
@@ -3856,13 +3876,13 @@ client.on("messageCreate", async (message) => {
     }
 
     if (!content) {
-      await message.reply("Send `guild_id`, `guild_id:channel_id`, `guild_id:channel_id 1000`, `guild_id:channel_id 03/03/26-09/03/26`, `guild_id:channel_id \"cat\"`, `guild_id:channel_id 1000 \"cat\"`, or `stop`.");
+      await message.reply("Send `guild_id`, `guild_id:channel_id`, `guild_id:channel_id 1000`, `guild_id:channel_id 03/03/26-09/03/26`, `guild_id:channel_id 13:30 18/02/26 - 13:55 18/02/26`, `guild_id:channel_id \"cat\"`, `guild_id:channel_id 1000 \"cat\"`, or `stop`.");
       return;
     }
 
     const request = parseDmChannelRequest(content);
     if (!request) {
-      await message.reply("Send `guild_id`, `guild_id:channel_id`, `guild_id:channel_id 1000`, `guild_id:channel_id 03/03/26-09/03/26`, `guild_id:channel_id \"cat\"`, `guild_id:channel_id 1000 \"cat\"`, or `stop`.");
+      await message.reply("Send `guild_id`, `guild_id:channel_id`, `guild_id:channel_id 1000`, `guild_id:channel_id 03/03/26-09/03/26`, `guild_id:channel_id 13:30 18/02/26 - 13:55 18/02/26`, `guild_id:channel_id \"cat\"`, `guild_id:channel_id 1000 \"cat\"`, or `stop`.");
       return;
     }
 
