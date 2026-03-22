@@ -152,6 +152,7 @@ const TIMERS_STORE_PATH = path.join(__dirname, "timers-messages.json");
 const RESERVATIONS_STORE_PATH = path.join(__dirname, "reservations-messages.json");
 const RESERVATION_OWNER_STORE_PATH = path.join(__dirname, "reservation-owners.json");
 const RESERVATION_MESSAGE_STORE_PATH = path.join(__dirname, "reservation-messages.json");
+const REMINDER_STORE_PATH = path.join(__dirname, "reminders-store.json");
 const AUDIT_LOG_PATH = path.join(__dirname, "audit.log");
 const REQUEST_LOG_PATH = path.join(__dirname, "request.log");
 const BUTTON_LOG_PATH = path.join(__dirname, "button-logs.ndjson");
@@ -1153,6 +1154,8 @@ const SNAPSHOT_REFRESH_MAX_DELAY_MS = 60_000;
 const DONE_STATE_OVERRIDE_TTL_MS = 15 * 60_000;
 const ORPHAN_DELETE_GRACE_MS = 120_000;
 const ORPHAN_DELETE_MIN_MISSES = 3;
+const REMINDER_LATE_GRACE_MS = 15 * 60_000;
+const REMINDER_FIRED_RETENTION_MS = REMINDER_LATE_GRACE_MS + 60_000;
 let timersNextFetchAttemptAt = 0;
 let timersFailureStreak = 0;
 let timersSnapshotRefreshPromise = null;
@@ -1167,6 +1170,7 @@ let timersSnapshotResetCounter = 0;
 const orphanDeletionCandidates = new Map(); // rowSerial -> { count, firstSeenAt }
 const timersStore = readJsonSafe(TIMERS_STORE_PATH, {});
 const reservationsStore = readJsonSafe(RESERVATIONS_STORE_PATH, {});
+const remindersStore = readJsonSafe(REMINDER_STORE_PATH, {});
 const DM_CHANNEL_EXPORT_OWNER_ID = "950661965137735710";
 
 for (const [channelId, messageId] of Object.entries(timersStore)) {
@@ -1192,6 +1196,10 @@ function persistReservationsStore() {
     Array.from(reservationsMessageByChannel.entries()).map(([channelId, entry]) => [channelId, entry?.messageId])
   );
   writeJsonSafe(RESERVATIONS_STORE_PATH, data);
+}
+
+function persistRemindersStore() {
+  writeJsonSafe(REMINDER_STORE_PATH, remindersStore);
 }
 
 function isAllowedDmUser(userId) {
@@ -2646,7 +2654,9 @@ async function updateAllReservationsMessages(client) {
   );
 }
 
-function cancelReminder(rowSerial, keepMetaIfFired = false) {
+function cancelReminder(rowSerial, opts = {}) {
+  const keepMetaIfFired = !!opts.keepMetaIfFired;
+  const keepStore = !!opts.keepStore;
   const key = String(rowSerial);
   const t = reminderTimers.get(key);
   if (t) clearTimeout(t);
@@ -2654,6 +2664,57 @@ function cancelReminder(rowSerial, keepMetaIfFired = false) {
   const meta = reminderMeta.get(key);
   if (keepMetaIfFired && meta?.fired) return;
   reminderMeta.delete(key);
+  if (!keepStore) clearReminderStoreEntry(key);
+}
+
+function getReminderStoreEntry(key) {
+  const entry = remindersStore[String(key)];
+  if (!entry || typeof entry !== "object") return null;
+  return entry;
+}
+
+function setReminderStoreEntry(key, entry) {
+  if (!entry || typeof entry !== "object") return;
+  remindersStore[String(key)] = entry;
+  persistRemindersStore();
+}
+
+function clearReminderStoreEntry(key) {
+  const id = String(key);
+  if (Object.prototype.hasOwnProperty.call(remindersStore, id)) {
+    delete remindersStore[id];
+    persistRemindersStore();
+  }
+}
+
+function markReminderFiredInStore(key) {
+  const entry = getReminderStoreEntry(key);
+  if (!entry) return;
+  entry.firedAtMs = Date.now();
+  setReminderStoreEntry(key, entry);
+}
+
+function pruneRemindersStore(now = Date.now()) {
+  let changed = false;
+  for (const [key, entry] of Object.entries(remindersStore)) {
+    if (!entry || typeof entry !== "object") {
+      delete remindersStore[key];
+      changed = true;
+      continue;
+    }
+    const firedAtMs = Number(entry.firedAtMs);
+    if (Number.isFinite(firedAtMs) && now - firedAtMs > REMINDER_FIRED_RETENTION_MS) {
+      delete remindersStore[key];
+      changed = true;
+      continue;
+    }
+    const remindAtMs = Number(entry.remindAtMs);
+    if (Number.isFinite(remindAtMs) && now - remindAtMs > REMINDER_LATE_GRACE_MS) {
+      delete remindersStore[key];
+      changed = true;
+    }
+  }
+  if (changed) persistRemindersStore();
 }
 
 async function deleteMessageRef(client, channelId, messageId) {
@@ -2892,13 +2953,29 @@ async function reconcileReservationState(rowStates) {
       }
 
       const reservationUtc = parseReservationUTC(reservationStr);
-      if (!reservationUtc || reservationUtc.getTime() <= Date.now()) {
+      if (!reservationUtc) {
+        cancelReminder(serial);
+        continue;
+      }
+
+      const nowMs = Date.now();
+      const resMs = reservationUtc.getTime();
+      const storeEntry = getReminderStoreEntry(serial);
+      const alreadyFired = storeEntry?.firedAtMs && storeEntry?.reservationStr === reservationStr;
+      const isLate = resMs <= nowMs;
+      const withinGrace = isLate && nowMs - resMs <= REMINDER_LATE_GRACE_MS;
+
+      if (isLate && alreadyFired) {
+        cancelReminder(serial, { keepMetaIfFired: true, keepStore: true });
+        continue;
+      }
+      if (isLate && !withinGrace) {
         cancelReminder(serial);
         continue;
       }
 
       const existingMeta = reminderMeta.get(serial) || {};
-      if (reminderTimers.has(serial) && existingMeta.reservationStr === reservationStr) {
+      if (!withinGrace && reminderTimers.has(serial) && existingMeta.reservationStr === reservationStr) {
         continue;
       }
 
@@ -3074,6 +3151,13 @@ async function postReminder({ client, channelId, rowSerial, title, username, coo
     reminderMessageId: sent.id,
     reminderChannelId: sent.channelId,
   });
+  markReminderFiredInStore(key);
+  pruneRemindersStore();
+  auditLog("remind_fire", {
+    rowSerial,
+    reminderChannelId: sent.channelId,
+    reminderMessageId: sent.id,
+  });
 
   if (sourceMessageUrl) {
     const ref = extractDiscordMessageLinkFromUrl(sourceMessageUrl);
@@ -3100,10 +3184,21 @@ function scheduleReminder({ client, rowSerial, reservationUtc, channelId, source
   const remindAtMs = reservationUtc.getTime();
 
   // overwrite existing
-  cancelReminder(key);
+  cancelReminder(key, { keepStore: true });
 
   // keep meta so the reminder can print correctly
-  reminderMeta.set(key, { title, username, coordinates, discordMention, channelId, sourceUrl: sourceMessageUrl, reservationStr });
+  reminderMeta.set(key, { title, username, coordinates, discordMention, channelId, sourceUrl: sourceMessageUrl, reservationStr, remindAtMs });
+  setReminderStoreEntry(key, {
+    remindAtMs,
+    reservationStr,
+    channelId,
+    sourceUrl: sourceMessageUrl,
+    title,
+    username,
+    coordinates,
+    discordMention,
+    armedAtMs: Date.now(),
+  });
 
   const arm = () => {
     const now = Date.now();
@@ -3131,6 +3226,46 @@ function scheduleReminder({ client, rowSerial, reservationUtc, channelId, source
   };
 
   arm();
+}
+
+function rehydrateReminders(client) {
+  if (!client) return;
+  pruneRemindersStore();
+  const now = Date.now();
+  for (const [key, entry] of Object.entries(remindersStore)) {
+    if (!entry || typeof entry !== "object") continue;
+    const firedAtMs = Number(entry.firedAtMs);
+    if (Number.isFinite(firedAtMs) && now - firedAtMs <= REMINDER_FIRED_RETENTION_MS) continue;
+
+    let remindAtMs = Number(entry.remindAtMs);
+    const reservationStr = String(entry.reservationStr || "").trim();
+    if (!Number.isFinite(remindAtMs) && reservationStr) {
+      const parsed = parseReservationUTC(reservationStr);
+      if (parsed) remindAtMs = parsed.getTime();
+    }
+    if (!Number.isFinite(remindAtMs)) {
+      clearReminderStoreEntry(key);
+      continue;
+    }
+    if (now - remindAtMs > REMINDER_LATE_GRACE_MS) {
+      clearReminderStoreEntry(key);
+      continue;
+    }
+
+    const reservationUtc = new Date(remindAtMs);
+    scheduleReminder({
+      client,
+      rowSerial: key,
+      reservationUtc,
+      channelId: entry.channelId || FORM_CHANNEL_ID,
+      sourceMessageUrl: entry.sourceUrl || null,
+      title: entry.title || "Title",
+      username: entry.username || "Username",
+      coordinates: entry.coordinates || "—",
+      discordMention: entry.discordMention || null,
+      reservationStr: reservationStr || formatUTCDateTime(reservationUtc),
+    });
+  }
 }
 
 // =====================
@@ -3941,6 +4076,7 @@ client.once("clientReady", async () => {
   } catch (e) {
     console.error("❌ ensurePanel failed:", e);
   }
+  rehydrateReminders(client);
   startSnapshotRefreshLoop();
 
   for (const [channelId, entry] of timersMessageByChannel.entries()) {
@@ -5205,7 +5341,7 @@ client.on("interactionCreate", async (interaction) => {
         const reminderFired = !!reminderMetaEntry?.fired;
 
         // Always cancel timer locally, then persist done+reminder state in sheet.
-        cancelReminder(rowSerial, true);
+        cancelReminder(rowSerial, { keepMetaIfFired: true });
 
         let json;
         try {
