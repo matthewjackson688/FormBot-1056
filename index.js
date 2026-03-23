@@ -3629,15 +3629,11 @@ function collectOutstandingReminders(nowMs = Date.now()) {
   return items;
 }
 
-function scheduleEphemeralDelete(message) {
-  if (!message) return;
+function scheduleEphemeralDelete(message, token) {
+  if (!message || !token || !message.id) return;
   setTimeout(async () => {
     try {
-      if (message.deletable) {
-        await message.delete();
-      } else if (message.delete) {
-        await message.delete().catch(() => {});
-      }
+      await rest.delete(Routes.webhookMessage(CLIENT_ID, token, message.id)).catch(() => {});
     } catch {}
   }, EPHEMERAL_TTL_MS);
 }
@@ -5018,6 +5014,8 @@ client.on("interactionCreate", async (interaction) => {
         channelId: interaction.channelId,
         guildId: interaction.guildId,
         ts: Date.now(),
+        responseToken: interaction.token || null,
+        responseMessageId: null,
       });
       const reply = await interaction.reply({
         flags: MessageFlags.Ephemeral,
@@ -5025,7 +5023,12 @@ client.on("interactionCreate", async (interaction) => {
         components: buildRemindSetupComponents(),
         fetchReply: true,
       });
-      scheduleEphemeralDelete(reply);
+      const existing = remindDraftByUser.get(interaction.user.id) || {};
+      remindDraftByUser.set(interaction.user.id, {
+        ...existing,
+        responseMessageId: reply?.id || existing.responseMessageId || null,
+      });
+      scheduleEphemeralDelete(reply, interaction.token);
       return;
     }
 
@@ -5040,13 +5043,12 @@ client.on("interactionCreate", async (interaction) => {
       }
       const lines = items.slice(0, 40).map((item) => {
         const stamp = Math.floor(item.remindAtMs / 1000);
-        const kind = item.kind === "manual" ? "Manual" : "Reservation";
-        return `${kind}: ${item.username} — ${item.title} — <t:${stamp}:F>`;
+        return `${item.username} — ${item.title} — <t:${stamp}:F>`;
       });
       const extra = items.length > 40 ? `\n…and ${items.length - 40} more.` : "";
       return interaction.reply({
         flags: MessageFlags.Ephemeral,
-        content: lines.join("\n").slice(0, 1900) + extra,
+        content: `\n${lines.join("\n").slice(0, 1900)}${extra}`,
       });
     }
 
@@ -5112,7 +5114,12 @@ client.on("interactionCreate", async (interaction) => {
         components: buildRemindSetupComponents(),
         fetchReply: true,
       });
-      scheduleEphemeralDelete(updated);
+      const latest = remindDraftByUser.get(interaction.user.id) || {};
+      remindDraftByUser.set(interaction.user.id, {
+        ...latest,
+        responseMessageId: updated?.id || latest.responseMessageId || null,
+      });
+      scheduleEphemeralDelete(updated, interaction.token);
       return;
     }
 
@@ -5312,12 +5319,28 @@ client.on("interactionCreate", async (interaction) => {
         guildId: interaction.guildId || existing.guildId,
         ts: Date.now(),
       });
+      const updatedDraft = remindDraftByUser.get(interaction.user.id) || {};
+      if (updatedDraft.responseToken && updatedDraft.responseMessageId) {
+        try {
+          await rest.patch(
+            Routes.webhookMessage(CLIENT_ID, updatedDraft.responseToken, updatedDraft.responseMessageId),
+            {
+              body: {
+                content: buildRemindSetupMessage(updatedDraft),
+                components: buildRemindSetupComponents(),
+              },
+            }
+          );
+        } catch (e) {
+          console.error("Failed to update remind setup message:", e);
+        }
+      }
       const reply = await interaction.reply({
         flags: MessageFlags.Ephemeral,
         content: "✅ Details saved. Click Done in the reminder box to set the reminder.",
         fetchReply: true,
       });
-      scheduleEphemeralDelete(reply);
+      scheduleEphemeralDelete(reply, interaction.token);
       return;
     }
 
@@ -5607,7 +5630,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `❌ Missing: ${missing.join(", ")}.`,
           fetchReply: true,
         });
-        scheduleEphemeralDelete(reply);
+        scheduleEphemeralDelete(reply, interaction.token);
         return;
       }
 
@@ -5619,7 +5642,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `❌ ${parsed.error}`,
           fetchReply: true,
         });
-        scheduleEphemeralDelete(reply);
+        scheduleEphemeralDelete(reply, interaction.token);
         return;
       }
 
@@ -5656,7 +5679,7 @@ client.on("interactionCreate", async (interaction) => {
         content: `✅ Reminder set for <t:${stamp}:F> (UTC: ${parsed.displayUtc}).`,
         fetchReply: true,
       });
-      scheduleEphemeralDelete(follow);
+      scheduleEphemeralDelete(follow, interaction.token);
       return;
     }
 
