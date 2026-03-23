@@ -3629,11 +3629,13 @@ function collectOutstandingReminders(nowMs = Date.now()) {
   return items;
 }
 
-function scheduleEphemeralDelete(message, token) {
-  if (!message || !token || !message.id) return;
+function scheduleEphemeralDelete(message, token, isOriginal = false) {
+  if (!message || !token) return;
   setTimeout(async () => {
     try {
-      await rest.delete(Routes.webhookMessage(CLIENT_ID, token, message.id)).catch(() => {});
+      const target = isOriginal ? "@original" : message.id;
+      if (!target) return;
+      await rest.delete(Routes.webhookMessage(CLIENT_ID, token, target)).catch(() => {});
     } catch {}
   }, EPHEMERAL_TTL_MS);
 }
@@ -5028,7 +5030,7 @@ client.on("interactionCreate", async (interaction) => {
         ...existing,
         responseMessageId: reply?.id || existing.responseMessageId || null,
       });
-      scheduleEphemeralDelete(reply, interaction.token);
+      scheduleEphemeralDelete(reply, interaction.token, true);
       return;
     }
 
@@ -5119,7 +5121,7 @@ client.on("interactionCreate", async (interaction) => {
         ...latest,
         responseMessageId: updated?.id || latest.responseMessageId || null,
       });
-      scheduleEphemeralDelete(updated, interaction.token);
+      scheduleEphemeralDelete(updated, interaction.token, true);
       return;
     }
 
@@ -5340,7 +5342,7 @@ client.on("interactionCreate", async (interaction) => {
         content: "✅ Details saved. Click Done in the reminder box to set the reminder.",
         fetchReply: true,
       });
-      scheduleEphemeralDelete(reply, interaction.token);
+      scheduleEphemeralDelete(reply, interaction.token, true);
       return;
     }
 
@@ -5630,7 +5632,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `❌ Missing: ${missing.join(", ")}.`,
           fetchReply: true,
         });
-        scheduleEphemeralDelete(reply, interaction.token);
+        scheduleEphemeralDelete(reply, interaction.token, true);
         return;
       }
 
@@ -5642,7 +5644,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `❌ ${parsed.error}`,
           fetchReply: true,
         });
-        scheduleEphemeralDelete(reply, interaction.token);
+        scheduleEphemeralDelete(reply, interaction.token, true);
         return;
       }
 
@@ -5679,7 +5681,7 @@ client.on("interactionCreate", async (interaction) => {
         content: `✅ Reminder set for <t:${stamp}:F> (UTC: ${parsed.displayUtc}).`,
         fetchReply: true,
       });
-      scheduleEphemeralDelete(follow, interaction.token);
+      scheduleEphemeralDelete(follow, interaction.token, false);
       return;
     }
 
