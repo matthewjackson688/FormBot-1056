@@ -154,6 +154,7 @@ const RESERVATION_OWNER_STORE_PATH = path.join(__dirname, "reservation-owners.js
 const RESERVATION_MESSAGE_STORE_PATH = path.join(__dirname, "reservation-messages.json");
 const REMINDER_STORE_PATH = path.join(__dirname, "reminders-store.json");
 const MANUAL_REMINDER_STORE_PATH = path.join(__dirname, "manual-reminders.json");
+const EPHEMERAL_TTL_MS = 5 * 60_000;
 const AUDIT_LOG_PATH = path.join(__dirname, "audit.log");
 const REQUEST_LOG_PATH = path.join(__dirname, "request.log");
 const BUTTON_LOG_PATH = path.join(__dirname, "button-logs.ndjson");
@@ -3500,11 +3501,24 @@ function buildRemindSetupMessage(draft = {}) {
   const username = draft.username || "—";
   const timeInput = draft.timeInput || "—";
   return [
-    "Reminder setup (only you can see this):",
+    "Reminder setup:",
     `Title: ${title}`,
     `Username: ${username}`,
     `Time: ${timeInput}`,
   ].join("\n");
+}
+
+function scheduleEphemeralDelete(message) {
+  if (!message) return;
+  setTimeout(async () => {
+    try {
+      if (message.deletable) {
+        await message.delete();
+      } else if (message.delete) {
+        await message.delete().catch(() => {});
+      }
+    } catch {}
+  }, EPHEMERAL_TTL_MS);
 }
 
 function buildPanelComponents() {
@@ -3557,7 +3571,7 @@ function buildRemindSetupComponents() {
   ];
 }
 
-function buildRemindDetailsModal(draft = {}) {
+function buildRemindDetailsModal(draft = {}, tzLabel = "UTC") {
   const modal = new ModalBuilder().setCustomId("remind_details_modal").setTitle("Set Reminder Details");
 
   const username = new TextInputBuilder()
@@ -3569,7 +3583,7 @@ function buildRemindDetailsModal(draft = {}) {
 
   const timeInput = new TextInputBuilder()
     .setCustomId("remind_time")
-    .setLabel("Reminder Time")
+    .setLabel(`Reminder Time (${tzLabel})`)
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder("23:42 or in 1 hour 30 minutes");
@@ -4879,11 +4893,14 @@ client.on("interactionCreate", async (interaction) => {
         guildId: interaction.guildId,
         ts: Date.now(),
       });
-      return interaction.reply({
+      const reply = await interaction.reply({
         flags: MessageFlags.Ephemeral,
         content: buildRemindSetupMessage(),
         components: buildRemindSetupComponents(),
+        fetchReply: true,
       });
+      scheduleEphemeralDelete(reply);
+      return;
     }
 
     // timezone picker select (IANA)
@@ -4943,10 +4960,13 @@ client.on("interactionCreate", async (interaction) => {
         guildId: interaction.guildId,
         ts: Date.now(),
       });
-      return interaction.update({
+      const updated = await interaction.update({
         content: buildRemindSetupMessage(remindDraftByUser.get(interaction.user.id)),
         components: buildRemindSetupComponents(),
+        fetchReply: true,
       });
+      scheduleEphemeralDelete(updated);
+      return;
     }
 
     // reservations panel
@@ -5145,10 +5165,13 @@ client.on("interactionCreate", async (interaction) => {
         guildId: interaction.guildId || existing.guildId,
         ts: Date.now(),
       });
-      return interaction.reply({
+      const reply = await interaction.reply({
         flags: MessageFlags.Ephemeral,
         content: "✅ Details saved. Click Done in the reminder box to set the reminder.",
+        fetchReply: true,
       });
+      scheduleEphemeralDelete(reply);
+      return;
     }
 
     // modal submit -> submit -> post in FORM channel
@@ -5414,8 +5437,10 @@ client.on("interactionCreate", async (interaction) => {
     // /remind edit details -> modal
     if (interaction.isButton() && interaction.customId === "remind_edit_details") {
       const draft = remindDraftByUser.get(interaction.user.id) || {};
+      const tz = getUserTimezone(interaction.user.id);
+      const tzLabel = tz ? getTimezoneLabel(tz) : "UTC";
       try {
-        return await interaction.showModal(buildRemindDetailsModal(draft));
+        return await interaction.showModal(buildRemindDetailsModal(draft, tzLabel));
       } catch (e) {
         if (isUnknownInteractionError(e)) return;
         throw e;
@@ -5430,19 +5455,25 @@ client.on("interactionCreate", async (interaction) => {
       if (!String(draft.username || "").trim()) missing.push("Username");
       if (!String(draft.timeInput || "").trim()) missing.push("Time");
       if (missing.length) {
-        return interaction.reply({
+        const reply = await interaction.reply({
           flags: MessageFlags.Ephemeral,
           content: `❌ Missing: ${missing.join(", ")}.`,
+          fetchReply: true,
         });
+        scheduleEphemeralDelete(reply);
+        return;
       }
 
       const tz = getUserTimezone(interaction.user.id);
       const parsed = parseReminderDateTime(draft.timeInput, tz);
       if (parsed?.error) {
-        return interaction.reply({
+        const reply = await interaction.reply({
           flags: MessageFlags.Ephemeral,
           content: `❌ ${parsed.error}`,
+          fetchReply: true,
         });
+        scheduleEphemeralDelete(reply);
+        return;
       }
 
       const reminderId = `manual_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -5461,10 +5492,25 @@ client.on("interactionCreate", async (interaction) => {
       remindDraftByUser.delete(interaction.user.id);
 
       const stamp = Math.floor(parsed.remindAtMs / 1000);
-      return interaction.reply({
+      try {
+        await interaction.deferUpdate();
+      } catch {}
+      try {
+        await interaction.deleteReply();
+      } catch {
+        try {
+          if (interaction.message?.deletable) {
+            await interaction.message.delete();
+          }
+        } catch {}
+      }
+      const follow = await interaction.followUp({
         flags: MessageFlags.Ephemeral,
         content: `✅ Reminder set for <t:${stamp}:F> (UTC: ${parsed.displayUtc}).`,
+        fetchReply: true,
       });
+      scheduleEphemeralDelete(follow);
+      return;
     }
 
     // 🛑 Cancel Remind
