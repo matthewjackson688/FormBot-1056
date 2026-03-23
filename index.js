@@ -5043,7 +5043,7 @@ client.on("interactionCreate", async (interaction) => {
       }
       const lines = items.slice(0, 40).map((item) => {
         const stamp = Math.floor(item.remindAtMs / 1000);
-        return `${item.username} — ${item.title} — <t:${stamp}:F>`;
+        return `${item.username}, ${item.title}, <t:${stamp}:F>`;
       });
       const extra = items.length > 40 ? `\n…and ${items.length - 40} more.` : "";
       return interaction.reply({
