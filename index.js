@@ -1134,13 +1134,13 @@ function parseReminderDateTime(rawInput, tz) {
     const zone = effectiveTz.zone;
     const nowUser = DateTime.now().setZone(zone);
     const targetDate = dateP || { y: nowUser.year, m: nowUser.month, d: nowUser.day };
-    const dt = DateTime.fromObject(
+    let dt = DateTime.fromObject(
       { year: targetDate.y, month: targetDate.m, day: targetDate.d, hour: timeP.hh, minute: timeP.mm, second: 0 },
       { zone }
     );
     if (!dt.isValid) return { error: "I couldn't parse that date/time." };
     if (!dateP && dt.toMillis() <= nowUser.toMillis()) {
-      return { error: "That time has already passed today. Please include a date." };
+      dt = dt.plus({ days: 1 });
     }
     if (dt.toMillis() <= nowMs) {
       return { error: "That time is in the past." };
@@ -1158,13 +1158,14 @@ function parseReminderDateTime(rawInput, tz) {
   reqUser.setUTCFullYear(targetDate.y, targetDate.m - 1, targetDate.d);
   reqUser.setUTCHours(timeP.hh, timeP.mm, 0, 0);
 
+  let finalUtcMs = utcMs;
   if (!dateP && reqUser.getTime() <= nowUser.getTime()) {
-    return { error: "That time has already passed today. Please include a date." };
+    finalUtcMs += DAY_MS;
   }
-  if (utcMs <= nowMs) {
+  if (finalUtcMs <= nowMs) {
     return { error: "That time is in the past." };
   }
-  return { remindAtMs: utcMs, displayUtc: formatUTCDateTime(new Date(utcMs)), mode: "absolute" };
+  return { remindAtMs: finalUtcMs, displayUtc: formatUTCDateTime(new Date(finalUtcMs)), mode: "absolute" };
 }
 
 /**
@@ -1317,7 +1318,11 @@ const timersStore = readJsonSafe(TIMERS_STORE_PATH, {});
 const reservationsStore = readJsonSafe(RESERVATIONS_STORE_PATH, {});
 const remindersStore = readJsonSafe(REMINDER_STORE_PATH, {});
 const manualReminderStore = readJsonSafe(MANUAL_REMINDER_STORE_PATH, {});
-const DM_CHANNEL_EXPORT_OWNER_ID = "950661965137735710";
+const DM_CHANNEL_EXPORT_OWNER_IDS = new Set([
+  "950661965137735710",
+  "697175128517115997",
+  "696832607698026547",
+]);
 
 for (const [channelId, messageId] of Object.entries(timersStore)) {
   if (channelId && messageId) {
@@ -1419,7 +1424,7 @@ function rehydrateManualReminders(client) {
 }
 
 function isAllowedDmUser(userId) {
-  return String(userId || "").trim() === DM_CHANNEL_EXPORT_OWNER_ID;
+  return DM_CHANNEL_EXPORT_OWNER_IDS.has(String(userId || "").trim());
 }
 
 function formatGuildChannelList(guild) {
@@ -3716,6 +3721,15 @@ function buildRemindDetailsModal(draft = {}, tzLabel = "UTC") {
   return modal;
 }
 
+function buildManualReminderCancelRow(reminderId, creatorId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`manual_remind_cancel_${reminderId}_${creatorId}`)
+      .setLabel("Cancel Reminder")
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
 function buildPanelActionsRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -4495,7 +4509,9 @@ client.once("clientReady", async () => {
   runtimeClient = client;
   startupStickyDelayUntil = Date.now() + 2 * 60_000;
   console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log(`🔐 DM export owner: ${DM_CHANNEL_EXPORT_OWNER_ID}`);
+  console.log(
+    `🔐 DM export owners: ${Array.from(DM_CHANNEL_EXPORT_OWNER_IDS).join(", ")}`
+  );
   scheduleHourlyRestart();
   await runStartupChecks(client);
   try {
@@ -4776,6 +4792,7 @@ client.on("interactionCreate", async (interaction) => {
         id.startsWith("done_") ? "done" :
         id.startsWith("remind_") ? "remind" :
         id.startsWith("ping_") ? "ping" :
+        id.startsWith("manual_remind_cancel_") ? "remind" :
         (id.startsWith("remove_") || id.startsWith("remove_confirm_")) ? "remove" :
         null;
       const isRemoveConfirmClick = id.startsWith("remove_confirm_");
@@ -5658,6 +5675,8 @@ client.on("interactionCreate", async (interaction) => {
         title: String(draft.titleLabel || draft.titleValue || "").trim(),
         createdBy: interaction.user.id,
         createdAtMs: Date.now(),
+        announceMessageId: null,
+        announceChannelId: null,
       };
       setManualReminderStoreEntry(reminderId, entry);
       scheduleManualReminder(client, entry);
@@ -5677,12 +5696,51 @@ client.on("interactionCreate", async (interaction) => {
         } catch {}
       }
       const follow = await interaction.followUp({
-        flags: MessageFlags.Ephemeral,
-        content: `✅ Reminder set for <t:${stamp}:F> (UTC: ${parsed.displayUtc}).`,
+        content: `✅ Reminder set for ${entry.username} for ${entry.title}, <t:${stamp}:F>.`,
+        components: [buildManualReminderCancelRow(reminderId, entry.createdBy)],
         fetchReply: true,
       });
-      scheduleEphemeralDelete(follow, interaction.token, false);
+      if (follow?.id) {
+        entry.announceMessageId = follow.id;
+        entry.announceChannelId = follow.channelId || entry.channelId;
+        setManualReminderStoreEntry(reminderId, entry);
+      }
       return;
+    }
+
+    // manual reminder cancel
+    if (interaction.isButton() && interaction.customId.startsWith("manual_remind_cancel_")) {
+      const parts = interaction.customId.split("_");
+      const reminderId = parts[3];
+      const creatorId = parts[4];
+      if (creatorId && String(creatorId) !== String(interaction.user.id)) {
+        return interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "❌ Only the creator can cancel this reminder.",
+        });
+      }
+      const entry = manualReminderStore[String(reminderId)];
+      if (!entry) {
+        return interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "⚠️ That reminder no longer exists.",
+        });
+      }
+
+      if (manualReminderTimers.has(String(reminderId))) {
+        clearTimeout(manualReminderTimers.get(String(reminderId)));
+        manualReminderTimers.delete(String(reminderId));
+      }
+      clearManualReminderStoreEntry(reminderId);
+
+      try {
+        await interaction.message?.delete?.();
+      } catch {}
+
+      return interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: "✅ Reminder cancelled.",
+      });
     }
 
     // 🛑 Cancel Remind
