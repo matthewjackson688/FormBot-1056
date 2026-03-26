@@ -3721,10 +3721,10 @@ function buildRemindDetailsModal(draft = {}, tzLabel = "UTC") {
   return modal;
 }
 
-function buildManualReminderCancelRow(reminderId, creatorId) {
+function buildManualReminderCancelRow(reminderId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`manual_remind_cancel_${reminderId}_${creatorId}`)
+      .setCustomId(`manual_remind_cancel:${reminderId}`)
       .setLabel("Cancel Reminder")
       .setStyle(ButtonStyle.Danger)
   );
@@ -4792,7 +4792,7 @@ client.on("interactionCreate", async (interaction) => {
         id.startsWith("done_") ? "done" :
         id.startsWith("remind_") ? "remind" :
         id.startsWith("ping_") ? "ping" :
-        id.startsWith("manual_remind_cancel_") ? "remind" :
+        id.startsWith("manual_remind_cancel:") ? "remind" :
         (id.startsWith("remove_") || id.startsWith("remove_confirm_")) ? "remove" :
         null;
       const isRemoveConfirmClick = id.startsWith("remove_confirm_");
@@ -5697,7 +5697,7 @@ client.on("interactionCreate", async (interaction) => {
       }
       const follow = await interaction.followUp({
         content: `✅ Reminder set for ${entry.username} for ${entry.title}, <t:${stamp}:F>.`,
-        components: [buildManualReminderCancelRow(reminderId, entry.createdBy)],
+        components: [buildManualReminderCancelRow(reminderId)],
         fetchReply: true,
       });
       if (follow?.id) {
@@ -5709,14 +5709,12 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // manual reminder cancel
-    if (interaction.isButton() && interaction.customId.startsWith("manual_remind_cancel_")) {
-      const parts = interaction.customId.split("_");
-      const reminderId = parts[3];
-      const creatorId = parts[4];
-      if (creatorId && String(creatorId) !== String(interaction.user.id)) {
+    if (interaction.isButton() && interaction.customId.startsWith("manual_remind_cancel:")) {
+      const reminderId = interaction.customId.slice("manual_remind_cancel:".length);
+      if (!reminderId) {
         return interaction.reply({
           flags: MessageFlags.Ephemeral,
-          content: "❌ Only the creator can cancel this reminder.",
+          content: "⚠️ That reminder no longer exists.",
         });
       }
       const entry = manualReminderStore[String(reminderId)];
@@ -5724,6 +5722,12 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({
           flags: MessageFlags.Ephemeral,
           content: "⚠️ That reminder no longer exists.",
+        });
+      }
+      if (String(entry.createdBy || "") !== String(interaction.user.id)) {
+        return interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "❌ Only the creator can cancel this reminder.",
         });
       }
 
