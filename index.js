@@ -2535,6 +2535,29 @@ function getOutstandingMadeAtMs(item) {
   return null;
 }
 
+function isAsapOrMissingReservation(value) {
+  const normalized = normalizeReservationDisplay(value);
+  if (normalized === "—") return true;
+  return normalized.trim().toLowerCase() === "asap";
+}
+
+function shouldHideReservationFromCheck(item, nowMs) {
+  if (!item || typeof item !== "object") return false;
+  if (!Number.isFinite(nowMs)) return false;
+  const HIDE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+  const reservationRaw = item.reservationUtc ?? item.reservation ?? item.Reservation ?? item["Reservation (UTC)"];
+  if (isAsapOrMissingReservation(reservationRaw)) {
+    const madeAtMs = getOutstandingMadeAtMs(item);
+    if (!Number.isFinite(madeAtMs)) return false;
+    return nowMs - madeAtMs >= HIDE_AFTER_MS;
+  }
+
+  const reservationMs = parseAnyTimestampMs(reservationRaw);
+  if (!Number.isFinite(reservationMs)) return false;
+  return nowMs - reservationMs >= HIDE_AFTER_MS;
+}
+
 function getReservationUsername(item) {
   if (!item || typeof item !== "object") return "Unknown";
   const keys = ["username", "Username", "userName", "player", "name"];
@@ -5167,9 +5190,11 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const allItems = Array.isArray(js.reservations) ? js.reservations : [];
+      const nowMs = Date.now();
       const items = allItems.filter((r) => {
         const serial = r?.serial ?? r?.row;
-        return getReservationOwner(serial) === discordId;
+        if (getReservationOwner(serial) !== discordId) return false;
+        return !shouldHideReservationFromCheck(r, nowMs);
       });
       const rowStateBySerial = new Map(
         (Array.isArray(timersSnapshot?.rowStates) ? timersSnapshot.rowStates : [])
@@ -5199,6 +5224,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!!rowState.done) continue;
         const reservationUtc = normalizeReservationDisplay(rowState.reservationUtc);
         if (!isReservationMissing(reservationUtc)) continue;
+        if (shouldHideReservationFromCheck(rowState, nowMs)) continue;
         bySerial.set(serial, {
           serial,
           title: rowState.title,
@@ -5223,7 +5249,7 @@ client.on("interactionCreate", async (interaction) => {
         const title = String(r.title || "Title");
         const reservationUtc = normalizeReservationDisplay(r.reservationUtc);
         const tz = getUserTimezone(interaction.user.id);
-        if (!isReservationMissing(reservationUtc)) {
+        if (!isAsapOrMissingReservation(reservationUtc)) {
           return {
             username: getReservationUsername(r),
             line: `${title} — ${formatReservationForUserTimezone(reservationUtc, tz)}`,
