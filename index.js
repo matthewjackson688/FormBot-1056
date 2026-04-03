@@ -2526,6 +2526,16 @@ function getOutstandingMadeAtMs(item) {
     "timestamp",
     "ts",
     "date",
+    "Made At (UTC)",
+    "Made At",
+    "Requested At (UTC)",
+    "Requested At",
+    "Submitted At (UTC)",
+    "Submitted At",
+    "Created At (UTC)",
+    "Created At",
+    "Timestamp (UTC)",
+    "Timestamp",
   ];
   for (const key of keys) {
     if (!(key in item)) continue;
@@ -2546,7 +2556,19 @@ function shouldHideReservationFromCheck(item, nowMs) {
   if (!Number.isFinite(nowMs)) return false;
   const HIDE_AFTER_MS = 24 * 60 * 60 * 1000;
 
-  const reservationRaw = item.reservationUtc ?? item.reservation ?? item.Reservation ?? item["Reservation (UTC)"];
+  const reservationRaw =
+    item.reservationUtc ??
+    item.reservationsUtc ??
+    item.reservation_utc ??
+    item.reservations_utc ??
+    item.reservation ??
+    item.Reservation ??
+    item["Reservation (UTC)"] ??
+    item["Reservations (UTC)"] ??
+    item["reservationUtc"] ??
+    item["reservationsUtc"] ??
+    item["Reservation"] ??
+    item["Reservations"];
   if (isAsapOrMissingReservation(reservationRaw)) {
     const madeAtMs = getOutstandingMadeAtMs(item);
     if (!Number.isFinite(madeAtMs)) return false;
