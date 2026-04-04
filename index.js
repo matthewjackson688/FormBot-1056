@@ -1059,10 +1059,13 @@ function parseRelativeDurationMs(input) {
   let hours = 0;
   let minutes = 0;
 
-  const compact = raw.match(/(\d+)\s*h(?:ours?|rs?)?\s*(\d+)\s*m?/);
+  const compact = raw.match(/(\d+)\s*h(?:ours?|rs?)?\s*(\d+)\s*(?:m(?:in(?:ute)?s?)?)?\b/);
   if (compact) {
-    hours += Number(compact[1] || 0);
-    minutes += Number(compact[2] || 0);
+    hours = Number(compact[1] || 0);
+    minutes = Number(compact[2] || 0);
+    const totalMinutes = hours * 60 + minutes;
+    if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return null;
+    return totalMinutes * 60_000;
   }
 
   const hourMatches = raw.matchAll(/(\d+)\s*(hours?|hrs?|hr|h)\b/g);
