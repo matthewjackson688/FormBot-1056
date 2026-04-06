@@ -2598,13 +2598,26 @@ function getReservationUsername(item) {
 function getManualReservationStartsByTitle(titles, nowMs = Date.now()) {
   const titleSet = new Set(titles);
   const byTitle = new Map();
-  for (const entry of Object.values(manualReminderStore)) {
+  const pushEntry = (entry) => {
     const remindAtMs = Number(entry?.remindAtMs);
-    if (!Number.isFinite(remindAtMs) || remindAtMs <= nowMs) continue;
+    if (!Number.isFinite(remindAtMs) || remindAtMs <= nowMs) return;
     const title = String(entry?.title || "").trim();
-    if (!titleSet.has(title)) continue;
+    if (!titleSet.has(title)) return;
     if (!byTitle.has(title)) byTitle.set(title, []);
     byTitle.get(title).push(remindAtMs);
+  };
+
+  for (const entry of Object.values(manualReminderStore)) {
+    pushEntry(entry);
+  }
+
+  for (const entry of Object.values(remindersStore)) {
+    if (!entry || typeof entry !== "object") continue;
+    const kind = String(entry.kind || "").trim();
+    const reservationStr = normalizeReservationDisplay(entry.reservationStr);
+    const isNonReservation = kind === "custom" || isAsapOrMissingReservation(reservationStr);
+    if (!isNonReservation) continue;
+    pushEntry(entry);
   }
   for (const list of byTitle.values()) {
     list.sort((a, b) => a - b);
