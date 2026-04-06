@@ -5768,7 +5768,11 @@ client.on("interactionCreate", async (interaction) => {
       const formChannel = await client.channels.fetch(FORM_CHANNEL_ID);
       const guardianMention = GUARDIAN_ID ? `<@&${GUARDIAN_ID}>` : "";
       const contentParts = [];
-      if (guardianMention && !isTestUsername) contentParts.push(guardianMention);
+      if (isTestUsername) {
+        contentParts.push("@silent");
+      } else if (guardianMention) {
+        contentParts.push(guardianMention);
+      }
       const content = contentParts.length ? contentParts.join(" ") : undefined;
 
       const sentFormMessage = await formChannel.send({ content, embeds: [embed], components: [actionRow] });
