@@ -1261,6 +1261,7 @@ const TITLES = [
 // userId -> selected title (for modal submit)
 const pendingTitleByUser = new Map(); // userId -> { value,label,description,ts }
 const remindDraftByUser = new Map(); // userId -> { username, titleValue, titleLabel, timeInput, channelId, guildId, ts }
+const remindInDraftByUser = new Map(); // key userId:rowSerial -> { rowSerial, title, username, coordinates, channelId, guildId, messageId, reservationStr, ownerUserId, sourceMessageUrl, ts }
 
 // =====================
 // REMINDERS (in-memory)
@@ -3056,6 +3057,17 @@ function clearReminderStoreEntry(key) {
   }
 }
 
+function isActiveCustomReminder(rowSerial, now = Date.now()) {
+  const entry = getReminderStoreEntry(rowSerial);
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.kind !== "custom") return false;
+  const firedAtMs = Number(entry.firedAtMs);
+  if (Number.isFinite(firedAtMs)) return false;
+  const remindAtMs = Number(entry.remindAtMs);
+  if (!Number.isFinite(remindAtMs)) return false;
+  return remindAtMs > now;
+}
+
 function markReminderFiredInStore(key) {
   const entry = getReminderStoreEntry(key);
   if (!entry) return;
@@ -3246,7 +3258,8 @@ async function reconcileReservationState(rowStates) {
 
       const reservationStr = normalizeReservationDisplay(rowState.reservationUtc);
       const completed = getEffectiveDoneState(serial, rowState.done);
-      const reminderEnabled = !!rowState.reminder && !isReservationMissing(reservationStr) && !completed;
+      const customReminderActive = !completed && isActiveCustomReminder(serial);
+      const reminderEnabled = (!!rowState.reminder && !isReservationMissing(reservationStr) && !completed) || customReminderActive;
       const currentIds = parseCurrentCustomIds(requestMsg);
       const hasPingButtonNow = currentIds.some((id) => id.startsWith("ping_"));
       const renderedCompleted = getCompletedFromEmbed(requestMsg);
@@ -3276,7 +3289,7 @@ async function reconcileReservationState(rowStates) {
       const rowUsername = String(rowState.username || "").trim();
       const embed = existingEmbed
         ? EmbedBuilder.from(existingEmbed)
-        : new EmbedBuilder().setTitle(rowUsername === "#TEST" ? "📋 TEST" : "📋 New Title Request");
+        : new EmbedBuilder().setTitle("📋 New Title Request");
       const fields = (existingEmbed?.fields || []).map((f) => ({ name: f.name, value: f.value, inline: f.inline }));
       if (String(rowState.username || "").trim()) {
         upsertEmbedField(fields, "Username", String(rowState.username).trim(), true);
@@ -3318,6 +3331,10 @@ async function reconcileReservationState(rowStates) {
 
       if (!reminderEnabled) {
         cancelReminder(serial);
+        continue;
+      }
+
+      if (customReminderActive) {
         continue;
       }
 
@@ -3548,7 +3565,7 @@ async function postReminder({ client, channelId, rowSerial, title, username, coo
   }
 }
 
-function scheduleReminder({ client, rowSerial, reservationUtc, channelId, sourceMessageUrl, title, username, coordinates, discordMention, reservationStr }) {
+function scheduleReminder({ client, rowSerial, reservationUtc, channelId, sourceMessageUrl, title, username, coordinates, discordMention, reservationStr, kind = "reservation" }) {
   const key = String(rowSerial);
   const remindAtMs = reservationUtc.getTime();
 
@@ -3556,7 +3573,7 @@ function scheduleReminder({ client, rowSerial, reservationUtc, channelId, source
   cancelReminder(key, { keepStore: true });
 
   // keep meta so the reminder can print correctly
-  reminderMeta.set(key, { title, username, coordinates, discordMention, channelId, sourceUrl: sourceMessageUrl, reservationStr, remindAtMs });
+  reminderMeta.set(key, { title, username, coordinates, discordMention, channelId, sourceUrl: sourceMessageUrl, reservationStr, remindAtMs, kind });
   setReminderStoreEntry(key, {
     remindAtMs,
     reservationStr,
@@ -3567,6 +3584,7 @@ function scheduleReminder({ client, rowSerial, reservationUtc, channelId, source
     coordinates,
     discordMention,
     armedAtMs: Date.now(),
+    kind,
   });
 
   const arm = () => {
@@ -3622,6 +3640,8 @@ function rehydrateReminders(client) {
     }
 
     const reservationUtc = new Date(remindAtMs);
+    const kind = entry.kind || "reservation";
+    const displayReservationStr = reservationStr || (kind === "custom" ? "" : formatUTCDateTime(reservationUtc));
     scheduleReminder({
       client,
       rowSerial: key,
@@ -3632,7 +3652,8 @@ function rehydrateReminders(client) {
       username: entry.username || "Username",
       coordinates: entry.coordinates || "—",
       discordMention: entry.discordMention || null,
-      reservationStr: reservationStr || formatUTCDateTime(reservationUtc),
+      reservationStr: displayReservationStr,
+      kind,
     });
   }
 }
@@ -3770,6 +3791,34 @@ function buildRemindDetailsModal(draft = {}, tzLabel = "UTC") {
 
   const timeInput = new TextInputBuilder()
     .setCustomId("remind_time")
+    .setLabel(`Reminder Time (${tzLabel})`)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("23:42 or in 1 hour 30 minutes");
+  if (draft.timeInput) timeInput.setValue(String(draft.timeInput).slice(0, 100));
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(username),
+    new ActionRowBuilder().addComponents(timeInput)
+  );
+
+  return modal;
+}
+
+function buildRemindInDetailsModal(rowSerial, draft = {}, tzLabel = "UTC") {
+  const modal = new ModalBuilder()
+    .setCustomId(`remind_in_details_modal:${rowSerial}`)
+    .setTitle("Set Reminder Details");
+
+  const username = new TextInputBuilder()
+    .setCustomId("remind_in_username")
+    .setLabel("Game Username")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+  if (draft.username) username.setValue(String(draft.username).slice(0, 100));
+
+  const timeInput = new TextInputBuilder()
+    .setCustomId("remind_in_time")
     .setLabel(`Reminder Time (${tzLabel})`)
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
@@ -4102,9 +4151,11 @@ function buildRequestActionRow(
   );
 
   const normalizedReservation = normalizeReservationDisplay(reservationStr);
-  const hasReservation = !isReservationMissing(normalizedReservation);
+  const reservationMissing = isAsapOrMissingReservation(normalizedReservation);
+  const hasReservation = !reservationMissing;
   const reservationUtc = hasReservation ? parseReservationUTC(normalizedReservation) : null;
   const reservationInFuture = reservationUtc ? reservationUtc.getTime() > Date.now() : false;
+  const hasCustomReminder = !completed && isActiveCustomReminder(rowSerial);
 
   if (hasReservation && reservationInFuture && !completed) {
     if (remindMode === "cancel") {
@@ -4119,6 +4170,22 @@ function buildRequestActionRow(
         new ButtonBuilder()
           .setCustomId(`remind_${rowSerial}`)
           .setLabel("⏰ Remind")
+          .setStyle(ButtonStyle.Primary)
+      );
+    }
+  } else if (!hasReservation && !completed) {
+    if (hasCustomReminder) {
+      buttons.push(
+        new ButtonBuilder()
+          .setCustomId(`remind_cancel_${rowSerial}`)
+          .setLabel("🛑 Cancel Remind")
+          .setStyle(ButtonStyle.Danger)
+      );
+    } else {
+      buttons.push(
+        new ButtonBuilder()
+          .setCustomId(`remind_in_${rowSerial}`)
+          .setLabel("🕒 Remind In")
           .setStyle(ButtonStyle.Primary)
       );
     }
@@ -5429,6 +5496,79 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // remind-in details modal submit
+    if (interaction.isModalSubmit() && interaction.customId.startsWith("remind_in_details_modal:")) {
+      const rowSerial = interaction.customId.split(":")[1];
+      const key = `${interaction.user.id}:${rowSerial}`;
+      const draft = remindInDraftByUser.get(key);
+      if (!draft || !rowSerial) {
+        return interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "❌ That reminder setup expired. Please click Remind In again.",
+        });
+      }
+
+      const username = String(interaction.fields.getTextInputValue("remind_in_username") || "").trim();
+      const timeInput = String(interaction.fields.getTextInputValue("remind_in_time") || "").trim();
+      const tz = getUserTimezone(interaction.user.id);
+      const parsed = parseReminderDateTime(timeInput, tz);
+      if (parsed?.error) {
+        return interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: `❌ ${parsed.error}`,
+        });
+      }
+
+      const reminderUtc = new Date(parsed.remindAtMs);
+      const discordMention = draft.ownerUserId ? `<@${draft.ownerUserId}>` : null;
+
+      scheduleReminder({
+        client,
+        rowSerial,
+        reservationUtc: reminderUtc,
+        channelId: draft.channelId || interaction.channelId,
+        sourceMessageUrl: draft.sourceMessageUrl || null,
+        title: draft.title || "Title",
+        username: username || draft.username || "Username",
+        coordinates: draft.coordinates || "—",
+        discordMention,
+        reservationStr: "",
+        kind: "custom",
+      });
+
+      // Update original message to show Cancel Remind
+      if (draft.channelId && draft.messageId) {
+        try {
+          const ch = await client.channels.fetch(draft.channelId);
+          if (ch?.isTextBased()) {
+            const msg = await ch.messages.fetch(draft.messageId);
+            const completed = getCompletedFromEmbed(msg);
+            const pingUserId = resolvePingUserId(msg, rowSerial);
+            const reservationStr = getReservationFromEmbed(msg);
+            const updatedRow = buildRequestActionRow(rowSerial, reservationStr, "arm", completed, pingUserId, !isPingHidden(rowSerial));
+            await msg.edit({ components: [updatedRow] });
+          }
+        } catch (e) {
+          console.error("Failed to update Remind In button:", e);
+        }
+      }
+
+      remindInDraftByUser.delete(key);
+      auditLog("remind_in_arm", {
+        userId: interaction.user.id,
+        rowSerial,
+        remindAtMs: parsed.remindAtMs,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+      });
+
+      const stamp = Math.floor(parsed.remindAtMs / 1000);
+      return interaction.reply({
+        flags: MessageFlags.Ephemeral,
+        content: `✅ Reminder set for ${username || draft.username || "Username"} for ${draft.title || "Title"}, <t:${stamp}:F>.`,
+      });
+    }
+
     // modal submit -> submit -> post in FORM channel
     if (interaction.isModalSubmit() && interaction.customId === "title_request_modal") {
       try {
@@ -5548,7 +5688,7 @@ client.on("interactionCreate", async (interaction) => {
       const displayDiscordUsername = `${interaction.user.username}${isTestUsername ? ` ${TEST_DISCORD_SUFFIX_EMOJI}` : ""}`;
 
       const embed = new EmbedBuilder()
-        .setTitle(isTestUsername ? "📋 TEST" : "📋 New Title Request")
+        .setTitle("📋 New Title Request")
         .addFields(
           { name: "👤 Discord", value: displayDiscordUsername, inline: true },
           { name: "🎮 Username", value: username, inline: true },
@@ -5813,6 +5953,46 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // 🕒 Remind In (custom time for no-reservation forms)
+    if (interaction.isButton() && interaction.customId.startsWith("remind_in_")) {
+      const rowSerial = interaction.customId.split("_")[2];
+      const title = getTitleFromEmbed(interaction.message) || "Title";
+      const username = getUsernameFromEmbed(interaction.message) || "Username";
+      const coordinates = getCoordinatesFromEmbed(interaction.message) || "—";
+      const ownerUserId = resolvePingUserId(interaction.message, rowSerial);
+      const reservationStr = normalizeReservationDisplay(getReservationFromEmbed(interaction.message));
+      if (!isAsapOrMissingReservation(reservationStr)) {
+        return interaction.reply({
+          flags: MessageFlags.Ephemeral,
+          content: "❌ This request already has a reservation time. Use ⏰ Remind instead.",
+        });
+      }
+      const tz = getUserTimezone(interaction.user.id);
+      const tzLabel = tz ? getTimezoneLabel(tz) : "UTC";
+
+      const key = `${interaction.user.id}:${rowSerial}`;
+      remindInDraftByUser.set(key, {
+        rowSerial,
+        title,
+        username,
+        coordinates,
+        channelId: interaction.channelId,
+        guildId: interaction.guildId,
+        messageId: interaction.message?.id || null,
+        reservationStr,
+        ownerUserId,
+        sourceMessageUrl: interaction.message?.url || null,
+        ts: Date.now(),
+      });
+
+      try {
+        return await interaction.showModal(buildRemindInDetailsModal(rowSerial, { username }, tzLabel));
+      } catch (e) {
+        if (isUnknownInteractionError(e)) return;
+        throw e;
+      }
+    }
+
     // 🛑 Cancel Remind
     if (interaction.isButton() && interaction.customId.startsWith("remind_cancel_")) {
       const rowSerial = interaction.customId.split("_")[2];
@@ -5821,17 +6001,21 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate();
 
       const metaBeforeCancel = reminderMeta.get(String(rowSerial)) || {};
+      const storeBeforeCancel = getReminderStoreEntry(rowSerial);
+      const isCustomReminder = metaBeforeCancel.kind === "custom" || storeBeforeCancel?.kind === "custom";
       cancelReminder(rowSerial);
 
       // Clear Remind At in sheet
-      let clearJson = null;
-      try {
-        clearJson = await postToAppsScript({ action: "clear_remind", rowSerial });
-      } catch (e) {
-        console.error("clear_remind -> Apps Script error:", e);
-      }
-      if (clearJson && !clearJson.success) {
-        console.error("clear_remind failed:", clearJson);
+      if (!isCustomReminder) {
+        let clearJson = null;
+        try {
+          clearJson = await postToAppsScript({ action: "clear_remind", rowSerial });
+        } catch (e) {
+          console.error("clear_remind -> Apps Script error:", e);
+        }
+        if (clearJson && !clearJson.success) {
+          console.error("clear_remind failed:", clearJson);
+        }
       }
 
       const completed = getCompletedFromEmbed(interaction.message);
@@ -5958,7 +6142,12 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // ⏰ Remind (arm)
-    if (interaction.isButton() && interaction.customId.startsWith("remind_")) {
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith("remind_") &&
+      !interaction.customId.startsWith("remind_in_") &&
+      !interaction.customId.startsWith("remind_cancel_")
+    ) {
       const rowSerial = interaction.customId.split("_")[1];
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
