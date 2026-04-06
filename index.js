@@ -5768,14 +5768,15 @@ client.on("interactionCreate", async (interaction) => {
       const formChannel = await client.channels.fetch(FORM_CHANNEL_ID);
       const guardianMention = GUARDIAN_ID ? `<@&${GUARDIAN_ID}>` : "";
       const contentParts = [];
-      if (isTestUsername) {
-        contentParts.push("@silent");
-      } else if (guardianMention) {
-        contentParts.push(guardianMention);
-      }
+      if (guardianMention && !isTestUsername) contentParts.push(guardianMention);
       const content = contentParts.length ? contentParts.join(" ") : undefined;
 
-      const sentFormMessage = await formChannel.send({ content, embeds: [embed], components: [actionRow] });
+      const sentFormMessage = await formChannel.send({
+        content,
+        embeds: [embed],
+        components: [actionRow],
+        flags: isTestUsername ? MessageFlags.SuppressNotifications : undefined,
+      });
       setReservationRequestMessage(rowSerial, sentFormMessage.channelId, sentFormMessage.id, interaction.guildId);
       auditLog("form_submit", {
         userId: interaction.user.id,
