@@ -3241,6 +3241,8 @@ function isPingHidden(serial) {
   return pingHiddenByRow.get(String(serial)) === true;
 }
 
+const SERIAL_COLLISION_GRACE_MS = 10 * 60 * 1000;
+
 async function reconcileReservationState(rowStates) {
   if (reservationStateSyncInFlight) return;
   if (!Array.isArray(rowStates) || !runtimeClient) return;
@@ -3252,6 +3254,22 @@ async function reconcileReservationState(rowStates) {
       if (!serial) continue;
       const ref = reservationMessages.get(serial);
       if (!ref?.requestChannelId || !ref?.requestMessageId) continue;
+
+      const rowCreatedAtMs = parseAnyTimestampMs(rowState?.madeAtUtc);
+      const refCreatedAtMs = Number(ref.requestCreatedAt || 0);
+      if (
+        Number.isFinite(rowCreatedAtMs) &&
+        Number.isFinite(refCreatedAtMs) &&
+        Math.abs(rowCreatedAtMs - refCreatedAtMs) > SERIAL_COLLISION_GRACE_MS
+      ) {
+        // Serial looks reused. Clear local mappings so we don't edit the wrong message.
+        cancelReminder(serial);
+        if (reservationOwners.delete(serial)) persistReservationOwners();
+        if (reservationMessages.delete(serial)) persistReservationMessages();
+        orphanDeletionCandidates.delete(serial);
+        auditLog("serial_collision_reset", { rowSerial: serial, refCreatedAtMs, rowCreatedAtMs });
+        continue;
+      }
 
       let requestMsg = null;
       try {
@@ -5758,7 +5776,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const rowSerial = String(jsonResponse.serial);
       setReservationOwner(rowSerial, interaction.user.id);
-      const displayDiscordUsername = `${interaction.user.username}${isTestUsername ? ` ${TEST_DISCORD_SUFFIX_EMOJI}` : ""}`;
+      const displayDiscordUsername = `<@${interaction.user.id}>${isTestUsername ? ` ${TEST_DISCORD_SUFFIX_EMOJI}` : ""} (${interaction.user.username})`;
 
       const embed = new EmbedBuilder()
         .setTitle("📋 New Title Request")
