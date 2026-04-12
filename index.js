@@ -5855,7 +5855,7 @@ client.on("interactionCreate", async (interaction) => {
 
       const rowSerial = String(jsonResponse.serial);
       setReservationOwner(rowSerial, interaction.user.id);
-      const displayDiscordUsername = `<@${interaction.user.id}>${isTestUsername ? ` ${TEST_DISCORD_SUFFIX_EMOJI}` : ""} (${interaction.user.username})`;
+      const displayDiscordUsername = `${interaction.user.username}${isTestUsername ? ` ${TEST_DISCORD_SUFFIX_EMOJI}` : ""}`;
 
       const embed = new EmbedBuilder()
         .setTitle("📋 New Title Request")
